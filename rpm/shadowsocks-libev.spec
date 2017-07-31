@@ -1,13 +1,12 @@
 Name:		shadowsocks-libev
 Version:	3.0.8
-Release:	1%{?dist}
+Release:	2%{?dist}
 Summary:	A lightweight and secure socks5 proxy
 
 Group:		Applications/Internet
 License:	GPLv3+
 URL:		https://github.com/madeye/%{name}
 Source0:	%{url}/releases/download/v%{version}/%{name}-%{version}.tar.gz
-Patch0:		SOURCES/0001-systemd-services.patch
 
 BuildRequires:	libsodium-devel >= 1.0.4
 BuildRequires:	mbedtls-devel
@@ -48,10 +47,11 @@ shadowsocks-libev is a lightweight secured socks5 proxy for embedded devices and
 
 %prep
 %setup -q
-%patch0 -p1
 
 
 %build
+# I know it's bad
+patch -p1 -s < %{_builddir}/%{buildsubdir}/rpm/SOURCES/0001-systemd-services.patch
 %configure --enable-shared
 make clean
 %make_build
@@ -64,9 +64,9 @@ mkdir -p %{buildroot}/etc/shadowsocks-libev
 mkdir -p %{buildroot}%{_initddir}
 install -m 755 %{_builddir}/%{buildsubdir}/rpm/SOURCES/etc/init.d/shadowsocks-libev %{buildroot}%{_initddir}/shadowsocks-libev
 %else
-mkdir -p %{buildroot}%{_sysconfdir}/default
+mkdir -p %{buildroot}%{_sysconfdir}/sysconfig
 mkdir -p %{buildroot}%{_unitdir}
-install -m 644 %{_builddir}/%{buildsubdir}/debian/shadowsocks-libev.default %{buildroot}%{_sysconfdir}/default/shadowsocks-libev
+install -m 644 %{_builddir}/%{buildsubdir}/debian/shadowsocks-libev.default %{buildroot}%{_sysconfdir}/sysconfig/shadowsocks-libev
 install -m 644 %{_builddir}/%{buildsubdir}/debian/shadowsocks-libev.service %{buildroot}%{_unitdir}/shadowsocks-libev.service
 %endif
 install -m 644 %{_builddir}/%{buildsubdir}/debian/config.json %{buildroot}%{_sysconfdir}/shadowsocks-libev/config.json
@@ -105,7 +105,7 @@ fi
 %{_initddir}/shadowsocks-libev
 %else
 %{_unitdir}/shadowsocks-libev.service
-%config(noreplace) %{_sysconfdir}/default/shadowsocks-libev
+%config(noreplace) %{_sysconfdir}/sysconfig/shadowsocks-libev
 %endif
 
 %package devel
