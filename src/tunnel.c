@@ -47,7 +47,6 @@
 #endif
 
 #include <libcork/core.h>
-#include <udns.h>
 
 #include "netutils.h"
 #include "utils.h"
@@ -95,6 +94,7 @@ static int mode      = TCP_ONLY;
 #ifdef HAVE_SETRLIMIT
 static int nofile = 0;
 #endif
+static int no_delay = 0;
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
@@ -378,7 +378,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     // Disable TCP_NODELAY after the first response are sent
-    if (!remote->recv_ctx->connected) {
+    if (!remote->recv_ctx->connected && !no_delay) {
         int opt = 0;
         setsockopt(server->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
         setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
@@ -416,7 +416,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                     memset(&host, 0, sizeof(struct in_addr));
                     int host_len = sizeof(struct in_addr);
 
-                    if (dns_pton(AF_INET, sa->host, &host) == -1) {
+                    if (inet_pton(AF_INET, sa->host, &host) == -1) {
                         FATAL("IP parser error");
                     }
                     abuf->data[abuf->len++] = 1;
@@ -428,7 +428,7 @@ remote_send_cb(EV_P_ ev_io *w, int revents)
                     memset(&host, 0, sizeof(struct in6_addr));
                     int host_len = sizeof(struct in6_addr);
 
-                    if (dns_pton(AF_INET6, sa->host, &host) == -1) {
+                    if (inet_pton(AF_INET6, sa->host, &host) == -1) {
                         FATAL("IP parser error");
                     }
                     abuf->data[abuf->len++] = 4;
@@ -789,6 +789,7 @@ main(int argc, char **argv)
 
     static struct option long_options[] = {
         { "mtu",         required_argument, NULL, GETOPT_VAL_MTU },
+        { "no-delay",    no_argument,       NULL, GETOPT_VAL_NODELAY },
         { "mptcp",       no_argument,       NULL, GETOPT_VAL_MPTCP },
         { "plugin",      required_argument, NULL, GETOPT_VAL_PLUGIN },
         { "plugin-opts", required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
@@ -818,6 +819,10 @@ main(int argc, char **argv)
         case GETOPT_VAL_MPTCP:
             mptcp = 1;
             LOGI("enable multipath TCP");
+            break;
+        case GETOPT_VAL_NODELAY:
+            no_delay = 1;
+            LOGI("enable TCP no-delay");
             break;
         case GETOPT_VAL_PLUGIN:
             plugin = optarg;
@@ -1022,8 +1027,8 @@ main(int argc, char **argv)
         local_addr = "127.0.0.1";
     }
 
+    USE_SYSLOG(argv[0], pid_flags);
     if (pid_flags) {
-        USE_SYSLOG(argv[0]);
         daemonize(pid_path);
     }
 

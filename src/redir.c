@@ -41,7 +41,6 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_ipv6/ip6_tables.h>
 
-#include <udns.h>
 #include <libcork/core.h>
 
 #ifdef HAVE_CONFIG_H
@@ -99,6 +98,7 @@ static int mode      = TCP_ONLY;
 static int nofile    = 0;
 #endif
 static int fast_open = 0;
+static int no_delay  = 0;
 
 static struct ev_signal sigint_watcher;
 static struct ev_signal sigterm_watcher;
@@ -228,11 +228,11 @@ server_recv_cb(EV_P_ ev_io *w, int revents)
 
         if (AF_INET == server->destaddr.ss_family) {
             struct sockaddr_in *sa = (struct sockaddr_in *)&(server->destaddr);
-            dns_ntop(AF_INET, &(sa->sin_addr), ipstr, INET_ADDRSTRLEN);
+            inet_ntop(AF_INET, &(sa->sin_addr), ipstr, INET_ADDRSTRLEN);
             port = ntohs(sa->sin_port);
         } else {
             struct sockaddr_in6 *sa = (struct sockaddr_in6 *)&(server->destaddr);
-            dns_ntop(AF_INET6, &(sa->sin6_addr), ipstr, INET6_ADDRSTRLEN);
+            inet_ntop(AF_INET6, &(sa->sin6_addr), ipstr, INET6_ADDRSTRLEN);
             port = ntohs(sa->sin6_port);
         }
 
@@ -438,7 +438,7 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     }
 
     // Disable TCP_NODELAY after the first response are sent
-    if (!remote->recv_ctx->connected) {
+    if (!remote->recv_ctx->connected && !no_delay) {
         int opt = 0;
         setsockopt(server->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
         setsockopt(remote->fd, SOL_TCP, TCP_NODELAY, &opt, sizeof(opt));
@@ -906,6 +906,7 @@ main(int argc, char **argv)
         { "plugin",      required_argument, NULL, GETOPT_VAL_PLUGIN },
         { "plugin-opts", required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
         { "reuse-port",  no_argument,       NULL, GETOPT_VAL_REUSE_PORT },
+        { "no-delay",    no_argument,       NULL, GETOPT_VAL_NODELAY },
         { "password",    required_argument, NULL, GETOPT_VAL_PASSWORD },
         { "key",         required_argument, NULL, GETOPT_VAL_KEY },
         { "help",        no_argument,       NULL, GETOPT_VAL_HELP },
@@ -929,6 +930,10 @@ main(int argc, char **argv)
         case GETOPT_VAL_MPTCP:
             mptcp = 1;
             LOGI("enable multipath TCP");
+            break;
+        case GETOPT_VAL_NODELAY:
+            no_delay = 1;
+            LOGI("enable TCP no-delay");
             break;
         case GETOPT_VAL_PLUGIN:
             plugin = optarg;
@@ -1140,8 +1145,8 @@ main(int argc, char **argv)
 #endif
     }
 
+    USE_SYSLOG(argv[0], pid_flags);
     if (pid_flags) {
-        USE_SYSLOG(argv[0]);
         daemonize(pid_path);
     }
 
@@ -1251,17 +1256,17 @@ main(int argc, char **argv)
         }
 
         if(listen_ctx_current->tos) {
-            LOGI("listening at %s:%s (TOS/DSCP 0x%x)", local_addr, local_port, listen_ctx_current->tos);
+            LOGI("listening at %s:%s (TOS 0x%x)", local_addr, local_port, listen_ctx_current->tos);
         } else {
             LOGI("listening at %s:%s", local_addr, local_port);
         }
 
         // Handle additionals TOS/DSCP listening ports
         if (dscp_num > 0) {
-            listen_ctx_current = (listen_ctx_t*) malloc(sizeof(listen_ctx_t));
+            listen_ctx_current = (listen_ctx_t*) ss_malloc(sizeof(listen_ctx_t));
             listen_ctx_current = memcpy(listen_ctx_current, &listen_ctx, sizeof(listen_ctx_t));
             local_port = dscp[dscp_num-1].port;
-            listen_ctx_current->tos = dscp[dscp_num-1].dscp;
+            listen_ctx_current->tos = dscp[dscp_num-1].dscp << 2;
         }
     } while (dscp_num-- > 0);
 
