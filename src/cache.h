@@ -1,7 +1,7 @@
 /*
  * cache.h - Define the cache manager interface
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -56,7 +56,7 @@ struct cache {
 };
 
 int cache_create(struct cache **dst, const size_t capacity,
-                        void (*free_cb)(void *key, void *element));
+                 void (*free_cb)(void *key, void *element));
 int cache_delete(struct cache *cache, int keep_data);
 int cache_clear(struct cache *cache, ev_tstamp age);
 int cache_lookup(struct cache *cache, char *key, size_t key_len, void *result);

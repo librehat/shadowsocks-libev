@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.2)
 
 set(PROJECT_NAME shadowsocks-libev)
-set(RELEASE_DATE 2017-9-15)
-set(PROJECT_VERSION "3.1.0")
+set(RELEASE_DATE 2018-5-28)
+set(PROJECT_VERSION "3.2.0")
 set(PROJECT_DESC "a lightweight secured socks5 proxy")
 set(PROJECT_URL "https://shadowsocks.org")
 set(PROJECT_ISSUES_URL "https://github.com/shadowsocks/shadowsocks-libev")
@@ -30,13 +30,15 @@ endif ()
 message(STATUS "Running cmake version ${CMAKE_VERSION}")
 
 option(WITH_STATIC "build with static libraries." ON)
+option(WITH_EMBEDDED_SRC "build with embedded libcork, libipset, and libbloom source." ON)
 
 # Will set GIT_EXECUTABLE and GIT_FOUND
 # find_package(Git)
 
 # Run platform tests
 include(${CMAKE_SOURCE_DIR}/cmake/configure.cmake)
-configure_file(${CMAKE_SOURCE_DIR}/cmake/config.h.cmake ${CMAKE_SOURCE_DIR}/src/config.h)
+configure_file(${CMAKE_SOURCE_DIR}/cmake/config.h.cmake ${CMAKE_BINARY_DIR}/src/config.h)
+add_definitions(-I$(CMAKE_BINARY_DIR)/src)
 add_definitions(-DHAVE_CONFIG_H)
 
 # pkg-config
@@ -50,6 +52,7 @@ install(FILES
         DESTINATION pkgconfig
         )
 
+if (WITH_EMBEDDED_SRC)
 # We need libcork,libipset headers
 include_directories(libcork/include)
 include_directories(libipset/include)
@@ -136,6 +139,7 @@ endif ()
 add_library(bloom-shared SHARED ${LIBBLOOM_SOURCE})
 target_link_libraries(ipset-shared cork-shared bloom-shared)
 set_target_properties(bloom-shared PROPERTIES OUTPUT_NAME bloom)
+endif ()
 
 add_subdirectory(src)
 add_subdirectory(doc)

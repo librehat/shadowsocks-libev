@@ -1,7 +1,7 @@
 /*
  * crypto.h - Define the enryptor's interface
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -23,7 +23,9 @@
 #ifndef _CRYPTO_H
 #define _CRYPTO_H
 
+#ifndef __MINGW32__
 #include <sys/socket.h>
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -134,15 +136,15 @@ unsigned char *crypto_md5(const unsigned char *, size_t, unsigned char *);
 int crypto_derive_key(const char *, uint8_t *, size_t);
 int crypto_parse_key(const char *, uint8_t *, size_t);
 int crypto_hkdf(const mbedtls_md_info_t *md, const unsigned char *salt,
-                 int salt_len, const unsigned char *ikm, int ikm_len,
-                 const unsigned char *info, int info_len, unsigned char *okm,
-                 int okm_len);
+                int salt_len, const unsigned char *ikm, int ikm_len,
+                const unsigned char *info, int info_len, unsigned char *okm,
+                int okm_len);
 int crypto_hkdf_extract(const mbedtls_md_info_t *md, const unsigned char *salt,
-                         int salt_len, const unsigned char *ikm, int ikm_len,
-                         unsigned char *prk);
+                        int salt_len, const unsigned char *ikm, int ikm_len,
+                        unsigned char *prk);
 int crypto_hkdf_expand(const mbedtls_md_info_t *md, const unsigned char *prk,
-                        int prk_len, const unsigned char *info, int info_len,
-                        unsigned char *okm, int okm_len);
+                       int prk_len, const unsigned char *info, int info_len,
+                       unsigned char *okm, int okm_len);
 #ifdef SS_DEBUG
 void dump(char *tag, char *text, int len);
 #endif

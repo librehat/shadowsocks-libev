@@ -1,7 +1,7 @@
 /*
  * server.c - Provide shadowsocks service
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -83,16 +83,21 @@ setnonblocking(int fd)
 }
 
 static void
-destroy_server(struct server *server) {
+destroy_server(struct server *server)
+{
 // function used to free memories alloced in **get_server**
-    if (server->method) ss_free(server->method);
-    if (server->plugin) ss_free(server->plugin);
-    if (server->plugin_opts) ss_free(server->plugin_opts);
-    if (server->mode) ss_free(server->mode);
+    if (server->method)
+        ss_free(server->method);
+    if (server->plugin)
+        ss_free(server->plugin);
+    if (server->plugin_opts)
+        ss_free(server->plugin_opts);
+    if (server->mode)
+        ss_free(server->mode);
 }
 
 static void
-build_config(char *prefix, struct server *server)
+build_config(char *prefix, struct manager_ctx *manager, struct server *server)
 {
     char *path    = NULL;
     int path_size = strlen(prefix) + strlen(server->port) + 20;
@@ -110,11 +115,24 @@ build_config(char *prefix, struct server *server)
     fprintf(f, "{\n");
     fprintf(f, "\"server_port\":%d,\n", atoi(server->port));
     fprintf(f, "\"password\":\"%s\"", server->password);
-    if (server->fast_open[0]) fprintf(f, ",\n\"fast_open\": %s", server->fast_open);
-    if (server->mode)   fprintf(f, ",\n\"mode\":\"%s\"", server->mode);
-    if (server->method) fprintf(f, ",\n\"method\":\"%s\"", server->method);
-    if (server->plugin) fprintf(f, ",\n\"plugin\":\"%s\"", server->plugin);
-    if (server->plugin_opts) fprintf(f, ",\n\"plugin_opts\":\"%s\"", server->plugin_opts);
+    if (server->method)
+        fprintf(f, ",\n\"method\":\"%s\"", server->method);
+    else if (manager->method)
+        fprintf(f, ",\n\"method\":\"%s\"", manager->method);
+    if (server->fast_open[0])
+        fprintf(f, ",\n\"fast_open\": %s", server->fast_open);
+    else if (manager->fast_open)
+        fprintf(f, ",\n\"fast_open\": true");
+    if (server->no_delay[0])
+        fprintf(f, ",\n\"no_delay\": %s", server->no_delay);
+    else if (manager->no_delay)
+        fprintf(f, ",\n\"no_delay\": true");
+    if (server->mode)
+        fprintf(f, ",\n\"mode\":\"%s\"", server->mode);
+    if (server->plugin)
+        fprintf(f, ",\n\"plugin\":\"%s\"", server->plugin);
+    if (server->plugin_opts)
+        fprintf(f, ",\n\"plugin_opts\":\"%s\"", server->plugin_opts);
     fprintf(f, "\n}\n");
     fclose(f);
     ss_free(path);
@@ -124,17 +142,17 @@ static char *
 construct_command_line(struct manager_ctx *manager, struct server *server)
 {
     static char cmd[BUF_SIZE];
-    char *method = manager->method;
     int i;
+    int port;
 
-    build_config(working_dir, server);
+    port = atoi(server->port);
 
-    if (server->method) method = server->method;
+    build_config(working_dir, manager, server);
+
     memset(cmd, 0, BUF_SIZE);
     snprintf(cmd, BUF_SIZE,
-             "%s -m %s --manager-address %s -f %s/.shadowsocks_%s.pid -c %s/.shadowsocks_%s.conf",
-             executable, method, manager->manager_address,
-             working_dir, server->port, working_dir, server->port);
+             "%s --manager-address %s -f %s/.shadowsocks_%d.pid -c %s/.shadowsocks_%d.conf",
+             executable, manager->manager_address, working_dir, port, working_dir, port);
 
     if (manager->acl != NULL) {
         int len = strlen(cmd);
@@ -170,6 +188,10 @@ construct_command_line(struct manager_ctx *manager, struct server *server)
         int len = strlen(cmd);
         snprintf(cmd + len, BUF_SIZE - len, " --fast-open");
     }
+    if (server->no_delay[0] == 0 && manager->no_delay) {
+        int len = strlen(cmd);
+        snprintf(cmd + len, BUF_SIZE - len, " --no-delay");
+    }
     if (manager->ipv6first) {
         int len = strlen(cmd);
         snprintf(cmd + len, BUF_SIZE - len, " -6");
@@ -193,11 +215,6 @@ construct_command_line(struct manager_ctx *manager, struct server *server)
     for (i = 0; i < manager->host_num; i++) {
         int len = strlen(cmd);
         snprintf(cmd + len, BUF_SIZE - len, " -s %s", manager->hosts[i]);
-    }
-    // Always enable reuse port
-    {
-        int len = strlen(cmd);
-        snprintf(cmd + len, BUF_SIZE - len, " --reuse-port");
     }
 
     if (verbose) {
@@ -271,13 +288,13 @@ get_server(char *buf, int len)
             json_value *value = obj->u.object.values[i].value;
             if (strcmp(name, "server_port") == 0) {
                 if (value->type == json_string) {
-                    strncpy(server->port, value->u.string.ptr, 8);
+                    strncpy(server->port, value->u.string.ptr, 7);
                 } else if (value->type == json_integer) {
                     snprintf(server->port, 8, "%" PRIu64 "", value->u.integer);
                 }
             } else if (strcmp(name, "password") == 0) {
                 if (value->type == json_string) {
-                    strncpy(server->password, value->u.string.ptr, 128);
+                    strncpy(server->password, value->u.string.ptr, 127);
                 }
             } else if (strcmp(name, "method") == 0) {
                 if (value->type == json_string) {
@@ -286,6 +303,10 @@ get_server(char *buf, int len)
             } else if (strcmp(name, "fast_open") == 0) {
                 if (value->type == json_boolean) {
                     strncpy(server->fast_open, (value->u.boolean ? "true" : "false"), 8);
+                }
+            } else if (strcmp(name, "no_delay") == 0) {
+                if (value->type == json_boolean) {
+                    strncpy(server->no_delay, (value->u.boolean ? "true" : "false"), 8);
                 }
             } else if (strcmp(name, "plugin") == 0) {
                 if (value->type == json_string) {
@@ -334,7 +355,7 @@ parse_traffic(char *buf, int len, char *port, uint64_t *traffic)
             char *name        = obj->u.object.values[i].name;
             json_value *value = obj->u.object.values[i].value;
             if (value->type == json_integer) {
-                strncpy(port, name, 8);
+                strncpy(port, name, 7);
                 *traffic = value->u.integer;
             }
         }
@@ -458,11 +479,10 @@ check_port(struct manager_ctx *manager, struct server *server)
     }
 
     /* clean socks */
-    for (int i = 0; i < fd_count; i++) {
+    for (int i = 0; i < fd_count; i++)
         if (sock_fds[i] > 0) {
             close(sock_fds[i]);
         }
-    }
 
     ss_free(sock_fds);
 
@@ -623,7 +643,7 @@ manager_recv_cb(EV_P_ ev_io *w, int revents)
             ERROR("add_sendto");
         }
     } else if (strcmp(action, "list") == 0) {
-        struct cork_hash_table_iterator  iter;
+        struct cork_hash_table_iterator iter;
         struct cork_hash_table_entry  *entry;
         char buf[BUF_SIZE];
         memset(buf, 0, BUF_SIZE);
@@ -632,10 +652,10 @@ manager_recv_cb(EV_P_ ev_io *w, int revents)
         cork_hash_table_iterator_init(server_table, &iter);
         while ((entry = cork_hash_table_iterator_next(&iter)) != NULL) {
             struct server *server = (struct server *)entry->value;
-            char *method = server->method?server->method:manager->method;
-            size_t pos = strlen(buf);
-            size_t entry_len = strlen(server->port) + strlen(server->password) + strlen(method);
-            if (pos > BUF_SIZE-entry_len-50) {
+            char *method          = server->method ? server->method : manager->method;
+            size_t pos            = strlen(buf);
+            size_t entry_len      = strlen(server->port) + strlen(server->password) + strlen(method);
+            if (pos > BUF_SIZE - entry_len - 50) {
                 if (sendto(manager->fd, buf, pos, 0, (struct sockaddr *)&claddr, len)
                     != pos) {
                     ERROR("list_sendto");
@@ -643,13 +663,12 @@ manager_recv_cb(EV_P_ ev_io *w, int revents)
                 memset(buf, 0, BUF_SIZE);
                 pos = 0;
             }
-            sprintf(buf + pos, "\n\t{\"server_port\":\"%s\",\"password\":\"%s\",\"method\":\"%s\"},", 
-                    server->port,server->password,method);
-
+            sprintf(buf + pos, "\n\t{\"server_port\":\"%s\",\"password\":\"%s\",\"method\":\"%s\"},",
+                    server->port, server->password, method);
         }
 
         size_t pos = strlen(buf);
-        strcpy(buf + pos - 1, "\n]"); //Remove trailing ","
+        strcpy(buf + pos - 1, "\n]"); // Remove trailing ","
         pos = strlen(buf);
         if (sendto(manager->fd, buf, pos, 0, (struct sockaddr *)&claddr, len)
             != pos) {
@@ -839,6 +858,7 @@ main(int argc, char **argv)
     char *plugin_opts     = NULL;
 
     int fast_open  = 0;
+    int no_delay   = 0;
     int reuse_port = 0;
     int mode       = TCP_ONLY;
     int mtu        = 0;
@@ -857,19 +877,20 @@ main(int argc, char **argv)
     jconf_t *conf = NULL;
 
     static struct option long_options[] = {
-        { "fast-open",       no_argument,       NULL, GETOPT_VAL_FAST_OPEN },
-        { "reuse-port",      no_argument,       NULL, GETOPT_VAL_REUSE_PORT },
-        { "acl",             required_argument, NULL, GETOPT_VAL_ACL },
+        { "fast-open",       no_argument,       NULL, GETOPT_VAL_FAST_OPEN   },
+        { "no-delay",        no_argument,       NULL, GETOPT_VAL_NODELAY     },
+        { "reuse-port",      no_argument,       NULL, GETOPT_VAL_REUSE_PORT  },
+        { "acl",             required_argument, NULL, GETOPT_VAL_ACL         },
         { "manager-address", required_argument, NULL,
-                                                GETOPT_VAL_MANAGER_ADDRESS },
+          GETOPT_VAL_MANAGER_ADDRESS },
         { "executable",      required_argument, NULL,
-                                                GETOPT_VAL_EXECUTABLE },
-        { "mtu",             required_argument, NULL, GETOPT_VAL_MTU },
-        { "plugin",          required_argument, NULL, GETOPT_VAL_PLUGIN },
+          GETOPT_VAL_EXECUTABLE },
+        { "mtu",             required_argument, NULL, GETOPT_VAL_MTU         },
+        { "plugin",          required_argument, NULL, GETOPT_VAL_PLUGIN      },
         { "plugin-opts",     required_argument, NULL, GETOPT_VAL_PLUGIN_OPTS },
-        { "password",        required_argument, NULL, GETOPT_VAL_PASSWORD },
-        { "help",            no_argument,       NULL, GETOPT_VAL_HELP },
-        { NULL,              0,                 NULL, 0 }
+        { "password",        required_argument, NULL, GETOPT_VAL_PASSWORD    },
+        { "help",            no_argument,       NULL, GETOPT_VAL_HELP        },
+        { NULL,                              0, NULL,                      0 }
     };
 
     opterr = 0;
@@ -884,6 +905,9 @@ main(int argc, char **argv)
             break;
         case GETOPT_VAL_FAST_OPEN:
             fast_open = 1;
+            break;
+        case GETOPT_VAL_NODELAY:
+            no_delay = 1;
             break;
         case GETOPT_VAL_ACL:
             acl = optarg;
@@ -994,6 +1018,9 @@ main(int argc, char **argv)
         if (fast_open == 0) {
             fast_open = conf->fast_open;
         }
+        if (no_delay == 0) {
+            no_delay = conf->no_delay;
+        }
         if (reuse_port == 0) {
             reuse_port = conf->reuse_port;
         }
@@ -1057,6 +1084,10 @@ main(int argc, char **argv)
 #endif
     }
 
+    if (no_delay == 1) {
+        LOGI("using tcp no-delay");
+    }
+
     // ignore SIGPIPE
     signal(SIGPIPE, SIG_IGN);
     signal(SIGCHLD, SIG_IGN);
@@ -1074,6 +1105,7 @@ main(int argc, char **argv)
 
     manager.reuse_port      = reuse_port;
     manager.fast_open       = fast_open;
+    manager.no_delay        = no_delay;
     manager.verbose         = verbose;
     manager.mode            = mode;
     manager.password        = password;
@@ -1140,8 +1172,8 @@ main(int argc, char **argv)
         for (i = 0; i < conf->port_password_num; i++) {
             struct server *server = ss_malloc(sizeof(struct server));
             memset(server, 0, sizeof(struct server));
-            strncpy(server->port, conf->port_password[i].port, 8);
-            strncpy(server->password, conf->port_password[i].password, 128);
+            strncpy(server->port, conf->port_password[i].port, 7);
+            strncpy(server->password, conf->port_password[i].password, 127);
             add_server(&manager, server);
         }
     }

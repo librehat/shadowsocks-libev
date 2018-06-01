@@ -2,7 +2,7 @@ dnl                                               -*- Autoconf -*-
 dnl Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.67])
-AC_INIT([shadowsocks-libev], [3.1.0], [max.c.lv@gmail.com])
+AC_INIT([shadowsocks-libev], [3.2.0], [max.c.lv@gmail.com])
 AC_CONFIG_SRCDIR([src/crypto.c])
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_AUX_DIR(auto)
@@ -66,7 +66,7 @@ dnl Add library for mingw
 case $host in
   *-mingw*)
     CFLAGS="$CFLAGS -mno-ms-bitfields"
-    LIBS="$LIBS -ladvapi32 -lgdi32 -lws2_32 -lcrypt32"
+    LIBS="$LIBS -lws2_32"
     ;;
   *-cygwin*)
     CFLAGS="$CFLAGS -mno-ms-bitfields"
@@ -92,6 +92,10 @@ case $host in
   *-linux*)
     os_support=linux
     AC_MSG_RESULT(Linux)
+    ;;
+  *-mingw*)
+    os_support=mingw
+    AC_MSG_RESULT(MinGW)
     ;;
   *)
     AC_MSG_RESULT(transparent proxy does not support for $host)
@@ -139,7 +143,7 @@ AM_CONDITIONAL(BUILD_REDIRECTOR, test "$os_support" = "linux")
 AM_CONDITIONAL(BUILD_WINCOMPAT, test "$os_support" = "mingw")
 
 dnl Checks for header files.
-AC_CHECK_HEADERS([limits.h stdint.h inttypes.h arpa/inet.h fcntl.h langinfo.h locale.h netdb.h netinet/in.h stdlib.h string.h strings.h unistd.h sys/ioctl.h linux/random.h])
+AC_CHECK_HEADERS([limits.h stdint.h inttypes.h arpa/inet.h fcntl.h langinfo.h locale.h linux/tcp.h netinet/tcp.h netdb.h netinet/in.h stdlib.h string.h strings.h unistd.h sys/ioctl.h linux/random.h])
 
 dnl A special check required for <net/if.h> on Darwin. See
 dnl http://www.gnu.org/software/autoconf/manual/html_node/Header-Portability.html.
@@ -161,6 +165,10 @@ AC_CHECK_HEADERS([net/if.h], [], [],
 ])
 
 case $host in
+  *-mingw*)
+    AC_DEFINE([CONNECT_IN_PROGRESS], [WSAEWOULDBLOCK], [errno for incomplete non-blocking connect(2)])
+    AC_CHECK_HEADERS([winsock2.h ws2tcpip.h mswsock.h], [], [AC_MSG_ERROR([Missing MinGW headers])], [])
+    ;;
   *-linux*)
     AC_DEFINE([CONNECT_IN_PROGRESS], [EINPROGRESS], [errno for incomplete non-blocking connect(2)])
     dnl Checks for netfilter headers
@@ -219,20 +227,23 @@ AC_CHECK_LIB(socket, connect)
 dnl Checks for library functions.
 AC_CHECK_FUNCS([malloc memset posix_memalign socket])
 
+AC_ARG_WITH(ev,
+  AS_HELP_STRING([--with-ev=DIR], [use a specific libev library]),
+  [CFLAGS="$CFLAGS -I$withval/include"
+   CPPFLAGS="$CPPFLAGS -I$withval/include"
+   LDFLAGS="$LDFLAGS -L$withval/lib"]
+)
 AC_CHECK_HEADERS([ev.h libev/ev.h], [], [])
 AC_CHECK_LIB([ev], [ev_loop_destroy], [LIBS="-lev $LIBS"], [AC_MSG_ERROR([Couldn't find libev. Try installing libev-dev@<:@el@:>@.])])
 
 AC_CONFIG_FILES([shadowsocks-libev.pc
                  Makefile
+                 doc/Makefile
                  src/Makefile])
 
 AM_COND_IF([USE_SYSTEM_SHARED_LIB],
 		   [AC_DEFINE([USE_SYSTEM_SHARED_LIB], [1], [Define if use system shared lib.])],
 		   [AC_CONFIG_FILES([libbloom/Makefile libcork/Makefile libipset/Makefile])])
-
-AM_COND_IF([ENABLE_DOCUMENTATION],
-  [AC_CONFIG_FILES([doc/Makefile])
-])
 
 AC_ARG_ENABLE(connmarktos,
 [AS_HELP_STRING(--enable-connmarktos, Enable saved connmark to IP TOS QoS feature)],

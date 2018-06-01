@@ -1,7 +1,7 @@
 /*
  * jconf.h - Define the config data structure
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  * shadowsocks-libev is free software; you can redistribute it and/or modify
@@ -76,7 +76,6 @@ typedef struct {
     char *plugin_opts;
     int fast_open;
     int reuse_port;
-    int disable_sni;
     int nofile;
     char *nameserver;
     int dscp_num;
@@ -86,6 +85,7 @@ typedef struct {
     int mtu;
     int mptcp;
     int ipv6_first;
+    int no_delay;
 } jconf_t;
 
 jconf_t *read_jconf(const char *file);

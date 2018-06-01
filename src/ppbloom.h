@@ -1,7 +1,7 @@
 /*
  * ppbloom.h - Define the Ping-Pong Bloom Filter interface
  *
- * Copyright (C) 2013 - 2017, Max Lv <max.c.lv@gmail.com>
+ * Copyright (C) 2013 - 2018, Max Lv <max.c.lv@gmail.com>
  *
  * This file is part of the shadowsocks-libev.
  *
@@ -24,8 +24,8 @@
 #define _PPBLOOM_
 
 int ppbloom_init(int entries, double error);
-int ppbloom_check(const void * buffer, int len);
-int ppbloom_add(const void * buffer, int len);
+int ppbloom_check(const void *buffer, int len);
+int ppbloom_add(const void *buffer, int len);
 void ppbloom_free(void);
 
 #endif

@@ -32,13 +32,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
-
+#ifndef __MINGW32__
 #include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <errno.h>
 #include <unistd.h>
-
+#else
+#include "winsock.h" // Should be before <ares.h>
+#endif
 #include <ares.h>
 
 #ifdef HAVE_LIBEV_EV_H
@@ -53,13 +55,25 @@
 #include "utils.h"
 #include "netutils.h"
 
+#ifdef __MINGW32__
+#define CONV_STATE_CB (ares_sock_state_cb)
+#else
+#define CONV_STATE_CB
+#endif
+
 /*
  * Implement DNS resolution interface using libc-ares
  */
 
+
+#define SS_NUM_IOS 6
+#define SS_INVALID_FD -1
+#define SS_TIMER_AFTER 1.0
+
 struct resolv_ctx {
-    struct ev_io    io;
-    struct ev_timer tw;
+    struct ev_io ios[SS_NUM_IOS];
+    struct ev_timer timer;
+    ev_tstamp  last_tick;
 
     ares_channel channel;
     struct ares_options options;
@@ -71,7 +85,7 @@ struct resolv_query {
     struct sockaddr **responses;
 
     void (*client_cb)(struct sockaddr *, void *);
-    void (*free_cb)(void*);
+    void (*free_cb)(void *);
 
     uint16_t port;
 
@@ -82,20 +96,18 @@ struct resolv_query {
 
 extern int verbose;
 
-struct resolv_ctx default_ctx;
-static struct ev_loop* default_loop;
+static struct resolv_ctx default_ctx;
+static struct ev_loop *default_loop;
 
 enum {
-
     MODE_IPV4_FIRST = 0,
     MODE_IPV6_FIRST = 1
-
 } RESOLV_MODE;
 
-static int resolv_mode           = MODE_IPV4_FIRST;
+static int resolv_mode = MODE_IPV4_FIRST;
 
 static void resolv_sock_cb(struct ev_loop *, struct ev_io *, int);
-static void resolv_timeout_cb(struct ev_loop *, struct ev_timer *, int);
+static void resolv_timer_cb(struct ev_loop *, struct ev_timer *, int);
 static void resolv_sock_state_cb(void *, int, int, int);
 
 static void dns_query_v4_cb(void *, int, int, struct hostent *);
@@ -107,16 +119,12 @@ static struct sockaddr *choose_ipv4_first(struct resolv_query *);
 static struct sockaddr *choose_ipv6_first(struct resolv_query *);
 static struct sockaddr *choose_any(struct resolv_query *);
 
-static void reset_timer();
-
 /*
  * DNS UDP socket activity callback
  */
 static void
 resolv_sock_cb(EV_P_ ev_io *w, int revents)
 {
-    struct resolv_ctx *ctx = (struct resolv_ctx *) w;
-
     ares_socket_t rfd = ARES_SOCKET_BAD, wfd = ARES_SOCKET_BAD;
 
     if (revents & EV_READ)
@@ -124,9 +132,9 @@ resolv_sock_cb(EV_P_ ev_io *w, int revents)
     if (revents & EV_WRITE)
         wfd = w->fd;
 
-    ares_process_fd(ctx->channel, rfd, wfd);
+    default_ctx.last_tick = ev_now(default_loop);
 
-    reset_timer();
+    ares_process_fd(default_ctx.channel, rfd, wfd);
 }
 
 int
@@ -141,7 +149,7 @@ resolv_init(struct ev_loop *loop, char *nameservers, int ipv6first)
 
     default_loop = loop;
 
-    if ((status = ares_library_init(ARES_LIB_INIT_ALL) )!= ARES_SUCCESS) {
+    if ((status = ares_library_init(ARES_LIB_INIT_ALL)) != ARES_SUCCESS) {
         LOGE("c-ares error: %s", ares_strerror(status));
         FATAL("failed to initialize c-ares");
     }
@@ -149,15 +157,15 @@ resolv_init(struct ev_loop *loop, char *nameservers, int ipv6first)
     memset(&default_ctx, 0, sizeof(struct resolv_ctx));
 
     default_ctx.options.sock_state_cb_data = &default_ctx;
-    default_ctx.options.sock_state_cb = resolv_sock_state_cb;
-    default_ctx.options.timeout = 3000;
-    default_ctx.options.tries = 2;
+    default_ctx.options.sock_state_cb      = CONV_STATE_CB resolv_sock_state_cb;
+    default_ctx.options.timeout            = 3000;
+    default_ctx.options.tries              = 2;
 
     status = ares_init_options(&default_ctx.channel, &default_ctx.options,
 #if ARES_VERSION_MAJOR >= 1 && ARES_VERSION_MINOR >= 12
-            ARES_OPT_NOROTATE |
+                               ARES_OPT_NOROTATE |
 #endif
-            ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
+                               ARES_OPT_TIMEOUTMS | ARES_OPT_TRIES | ARES_OPT_SOCK_STATE_CB);
 
     if (status != ARES_SUCCESS) {
         FATAL("failed to initialize c-ares");
@@ -175,8 +183,13 @@ resolv_init(struct ev_loop *loop, char *nameservers, int ipv6first)
         FATAL("failed to set nameservers");
     }
 
-    ev_init(&default_ctx.io, resolv_sock_cb);
-    ev_timer_init(&default_ctx.tw, resolv_timeout_cb, 0.0, 0.0);
+    for (int i = 0; i < SS_NUM_IOS; i++) {
+        ev_io_init(&default_ctx.ios[i], resolv_sock_cb, SS_INVALID_FD, 0);
+    }
+
+    default_ctx.last_tick = ev_now(default_loop);
+    ev_init(&default_ctx.timer, resolv_timer_cb);
+    resolv_timer_cb(default_loop, &default_ctx.timer, 0);
 
     return 0;
 }
@@ -184,27 +197,26 @@ resolv_init(struct ev_loop *loop, char *nameservers, int ipv6first)
 void
 resolv_shutdown(struct ev_loop *loop)
 {
+    ev_timer_stop(default_loop, &default_ctx.timer);
+    for (int i = 0; i < SS_NUM_IOS; i++) {
+        ev_io_stop(default_loop, &default_ctx.ios[i]);
+    }
+
     ares_cancel(default_ctx.channel);
     ares_destroy(default_ctx.channel);
 
     ares_library_cleanup();
 }
 
-struct resolv_query *
+void
 resolv_start(const char *hostname, uint16_t port,
-        void (*client_cb)(struct sockaddr *, void *),
-        void (*free_cb)(void*), void *data)
+             void (*client_cb)(struct sockaddr *, void *),
+             void (*free_cb)(void *), void *data)
 {
     /*
      * Wrap c-ares's call back in our own
      */
-
     struct resolv_query *query = ss_malloc(sizeof(struct resolv_query));
-
-    if (query == NULL) {
-        LOGE("failed to allocate memory for DNS query callback data.");
-        return NULL;
-    }
 
     memset(query, 0, sizeof(struct resolv_query));
 
@@ -215,15 +227,11 @@ resolv_start(const char *hostname, uint16_t port,
     query->data           = data;
     query->free_cb        = free_cb;
 
-    query->requests[0]   = AF_INET;
-    query->requests[1]   = AF_INET6;
+    query->requests[0] = AF_INET;
+    query->requests[1] = AF_INET6;
 
-    ares_gethostbyname(default_ctx.channel, hostname, AF_INET,  dns_query_v4_cb, query);
+    ares_gethostbyname(default_ctx.channel, hostname, AF_INET, dns_query_v4_cb, query);
     ares_gethostbyname(default_ctx.channel, hostname, AF_INET6, dns_query_v6_cb, query);
-
-    reset_timer();
-
-    return query;
 }
 
 /*
@@ -239,7 +247,7 @@ dns_query_v4_cb(void *arg, int status, int timeouts, struct hostent *he)
         return;
     }
 
-    if(!he || status != ARES_SUCCESS){
+    if (!he || status != ARES_SUCCESS) {
         if (verbose) {
             LOGI("failed to lookup v4 address %s", ares_strerror(status));
         }
@@ -251,14 +259,13 @@ dns_query_v4_cb(void *arg, int status, int timeouts, struct hostent *he)
     }
 
     n = 0;
-    while (he->h_addr_list[n]) {
+    while (he->h_addr_list[n])
         n++;
-    }
 
     if (n > 0) {
         struct sockaddr **new_responses = ss_realloc(query->responses,
-                (query->response_count + n)
-                * sizeof(struct sockaddr *));
+                                                     (query->response_count + n)
+                                                     * sizeof(struct sockaddr *));
 
         if (new_responses == NULL) {
             LOGE("failed to allocate memory for additional DNS responses");
@@ -272,7 +279,7 @@ dns_query_v4_cb(void *arg, int status, int timeouts, struct hostent *he)
                 sa->sin_port   = query->port;
                 memcpy(&sa->sin_addr, he->h_addr_list[i], he->h_length);
 
-                query->responses[query->response_count] = (struct sockaddr*)sa;
+                query->responses[query->response_count] = (struct sockaddr *)sa;
                 if (query->responses[query->response_count] == NULL) {
                     LOGE("failed to allocate memory for DNS query result address");
                 } else {
@@ -302,7 +309,7 @@ dns_query_v6_cb(void *arg, int status, int timeouts, struct hostent *he)
         return;
     }
 
-    if(!he || status != ARES_SUCCESS){
+    if (!he || status != ARES_SUCCESS) {
         if (verbose) {
             LOGI("failed to lookup v6 address %s", ares_strerror(status));
         }
@@ -314,14 +321,13 @@ dns_query_v6_cb(void *arg, int status, int timeouts, struct hostent *he)
     }
 
     n = 0;
-    while (he->h_addr_list[n]) {
+    while (he->h_addr_list[n])
         n++;
-    }
 
     if (n > 0) {
         struct sockaddr **new_responses = ss_realloc(query->responses,
-                (query->response_count + n)
-                * sizeof(struct sockaddr *));
+                                                     (query->response_count + n)
+                                                     * sizeof(struct sockaddr *));
 
         if (new_responses == NULL) {
             LOGE("failed to allocate memory for additional DNS responses");
@@ -335,7 +341,7 @@ dns_query_v6_cb(void *arg, int status, int timeouts, struct hostent *he)
                 sa->sin6_port   = query->port;
                 memcpy(&sa->sin6_addr, he->h_addr_list[i], he->h_length);
 
-                query->responses[query->response_count] = (struct sockaddr*)sa;
+                query->responses[query->response_count] = (struct sockaddr *)sa;
                 if (query->responses[query->response_count] == NULL) {
                     LOGE("failed to allocate memory for DNS query result address");
                 } else {
@@ -431,48 +437,64 @@ all_requests_are_null(struct resolv_query *query)
 }
 
 /*
- *  DNS timeout callback
+ *  Timer callback
  */
 static void
-resolv_timeout_cb(struct ev_loop *loop, struct ev_timer *w, int revents)
+resolv_timer_cb(struct ev_loop *loop, struct ev_timer *w, int revents)
 {
-    struct resolv_ctx *ctx= cork_container_of(w, struct resolv_ctx, tw);
+    struct resolv_ctx *ctx = cork_container_of(w, struct resolv_ctx, timer);
 
-    ares_process_fd(ctx->channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
+    ev_tstamp now = ev_now(default_loop);
+    ev_tstamp after = ctx->last_tick - now + SS_TIMER_AFTER;
 
-    reset_timer();
-}
+    if (after < 0.0) {
+        ctx->last_tick = now;
+        ares_process_fd(ctx->channel, ARES_SOCKET_BAD, ARES_SOCKET_BAD);
 
-static void
-reset_timer()
-{
-    struct timeval tvout;
-    struct timeval *tv = ares_timeout(default_ctx.channel, NULL, &tvout);
-    if (tv == NULL) {
-        return;
+        ev_timer_set(w, SS_TIMER_AFTER, 0.0);
+    } else {
+        ev_timer_set(w, after, 0.0);
     }
-    float repeat = tv->tv_sec + tv->tv_usec / 1000000. + 1e-9;
-    ev_timer_set(&default_ctx.tw, repeat, repeat);
-    ev_timer_again(default_loop, &default_ctx.tw);
+
+    ev_timer_start(loop, w);
 }
 
 /*
  * Handle c-ares events
  */
 static void
-resolv_sock_state_cb(void *data, int s, int read, int write) {
+resolv_sock_state_cb(void *data, int s, int read, int write)
+{
+    struct resolv_ctx *ctx = (struct resolv_ctx *)data;
+    int events = (read ? EV_READ : 0) | (write ? EV_WRITE : 0);
 
-    struct resolv_ctx *ctx = (struct resolv_ctx *) data;
-    int io_active = ev_is_active(&ctx->io);
-
-    if (read || write) {
-        if (io_active && ctx->io.fd != s) {
-            ev_io_stop(default_loop, &ctx->io);
+    int i = 0, ffi = -1;
+    for (; i < SS_NUM_IOS; i++) {
+        if (ctx->ios[i].fd == s) {
+            break;
         }
-        ev_io_set(&ctx->io, s, (read ? EV_READ : 0) | (write ? EV_WRITE : 0));
-        ev_io_start(default_loop, &ctx->io);
+
+        if (ffi < 0 && ctx->ios[i].fd == SS_INVALID_FD) {
+            // first free index
+            ffi = i;
+        }
+    }
+
+    if (i < SS_NUM_IOS) {
+        ev_io_stop(default_loop, &ctx->ios[i]);
+    } else if (ffi > -1) {
+        i = ffi;
     } else {
-        ev_io_stop(default_loop, &ctx->io);
-        ev_io_set(&ctx->io, -1, 0);
+        LOGE("failed to find free I/O watcher slot for DNS query");
+        // last resort: stop io and re-use slot, will cause timeout
+        i = 0;
+        ev_io_stop(default_loop, &ctx->ios[i]);
+    }
+
+    if (events) {
+        ev_io_set(&ctx->ios[i], s, events);
+        ev_io_start(default_loop, &ctx->ios[i]);
+    } else {
+        ev_io_set(&ctx->ios[i], SS_INVALID_FD, 0);
     }
 }
